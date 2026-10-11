@@ -1,0 +1,16 @@
+{
+  "notice": "Danh sách email dùng để đối chiếu khi tạo tài khoản Auth và vai trò trong Supabase.",
+  "accounts": [
+    {
+      "username": "quanly@gmail.com",
+      "role": "manager",
+      "displayName": "Quản lý"
+    },
+    {
+      "username": "cothu@gmail.com",
+      "role": "contestant",
+      "displayName": "Người chơi 1",
+      "playerNumber": 1
+    }
+  ]
+}
