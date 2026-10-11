@@ -27,8 +27,6 @@ import {
   Waypoints,
   SunMedium,
   RefreshCw,
-  Play,
-  Pause,
   CheckCircle2,
   LogOut,
   LockKeyhole,
@@ -38,7 +36,7 @@ import {
 import { supabase, supabaseConfigError } from './supabase'
 import './App.css'
 
-type Section = 'overview' | 'tournament' | 'players' | 'ranking' | 'check' | 'history' | 'stats' | 'settings'
+type Section = 'overview' | 'players' | 'ranking' | 'check' | 'history' | 'stats' | 'settings'
 type TournamentStatus = 'draft' | 'active' | 'paused' | 'completed'
 type AuthRole = 'manager' | 'contestant'
 
@@ -82,7 +80,9 @@ type Tournament = {
   totalRounds: number
   scoreTable: ScoreEntry[]
   championRule: string
+  championThreshold?: number
   createdAt: string
+  completedAt?: string
   lastUpdated: string
   rounds: RoundResult[]
 }
@@ -93,6 +93,7 @@ type AppState = {
   defaultRoundCount: number
   defaultScoreTable: ScoreEntry[]
   championRule: string
+  championThreshold: number
   tournaments: Tournament[]
   activeTournamentId: string | null
 }
@@ -127,7 +128,6 @@ const DEFAULT_SCORE_TABLE: ScoreEntry[] = [
   { rank: 7, points: 2 },
   { rank: 8, points: 1 },
 ]
-
 const normalizeScoreTable = (table: ScoreEntry[]): ScoreEntry[] => {
   const entries = [...table]
     .filter((item) => Number.isFinite(item.rank) && Number.isFinite(item.points))
@@ -157,28 +157,38 @@ const scoreForRank = (rank: number, table: ScoreEntry[]): number => {
 }
 
 const buildPlayerName = (index: number) => `Người chơi ${index + 1}`
+const currentTimestamp = () => new Date().toISOString()
 
 const getPlayerAvatar = (player: Player, index: number) =>
   player.avatar || `/player-avatars/player-${(index % 8) + 1}.png`
 
-const buildDefaultPlayers = (count: number): Player[] =>
+const buildDefaultPlayers = (count: number, names: string[] = []): Player[] =>
   Array.from({ length: count }, (_, index) => ({
     id: crypto.randomUUID(),
-    displayName: buildPlayerName(index),
+    displayName: names[index]?.trim() || buildPlayerName(index),
     avatar: `/player-avatars/player-${(index % 8) + 1}.png`,
   }))
 
-const createTournament = (name: string, playerCount: number, defaultRoundCount: number, scoreTable: ScoreEntry[], championRule: string): Tournament => ({
+const createTournament = (
+  name: string,
+  playerCount: number,
+  roundCount: number,
+  scoreTable: ScoreEntry[],
+  championRule: string,
+  playerNames: string[],
+  championThreshold: number,
+): Tournament => ({
   id: crypto.randomUUID(),
   name: name.trim() || 'Ao Làng LA',
   status: 'draft',
-  players: buildDefaultPlayers(playerCount),
+  players: buildDefaultPlayers(playerCount, playerNames),
   currentRound: 1,
-  totalRounds: defaultRoundCount,
+  totalRounds: roundCount,
   scoreTable: normalizeScoreTable(scoreTable),
   championRule,
-  createdAt: new Date().toISOString(),
-  lastUpdated: new Date().toISOString(),
+  championThreshold,
+  createdAt: currentTimestamp(),
+  lastUpdated: currentTimestamp(),
   rounds: [],
 })
 
@@ -208,11 +218,12 @@ const getTournamentRanking = (tournament: Tournament) => {
     const recentPoints = roundsWithPlayer.length
       ? (roundsWithPlayer[roundsWithPlayer.length - 1].result?.points ?? 0)
       : 0
-    const checkmate = totalPoints >= 20
+    const championThreshold = tournament.championThreshold ?? 20
+    const checkmate = totalPoints >= championThreshold
     let pointsBeforeRound = 0
     const checkmateRound = playerRounds.find(({ result }) => {
       pointsBeforeRound += result?.points ?? 0
-      return pointsBeforeRound >= 20
+      return pointsBeforeRound >= championThreshold
     })?.round.round
     const champion = checkmateRound !== undefined && Boolean(
       tournament.rounds
@@ -275,6 +286,7 @@ const defaultAppState = (): AppState => ({
   defaultRoundCount: 8,
   defaultScoreTable: DEFAULT_SCORE_TABLE,
   championRule: 'checkmate + top 1 ở ván tiếp theo',
+  championThreshold: 20,
   tournaments: [],
   activeTournamentId: null,
 })
@@ -288,6 +300,7 @@ const normalizeAppState = (raw: unknown): AppState => {
     defaultScoreTable: normalizeScoreTable(
       Array.isArray(parsed.defaultScoreTable) ? parsed.defaultScoreTable : DEFAULT_SCORE_TABLE,
     ),
+    championThreshold: Number.isFinite(parsed.championThreshold) ? Number(parsed.championThreshold) : 20,
     tournaments: Array.isArray(parsed.tournaments) ? parsed.tournaments : [],
     activeTournamentId: parsed.activeTournamentId ?? null,
   }
@@ -319,7 +332,11 @@ function App() {
   const [newTournamentForm, setNewTournamentForm] = useState({
     name: 'Ao Làng LA',
     playerCount: 8,
+    totalRounds: 8,
+    playerNames: Array.from({ length: 8 }, (_, index) => buildPlayerName(index)),
   })
+  const [isCreateTournamentOpen, setIsCreateTournamentOpen] = useState(false)
+  const [comparisonTournamentIds, setComparisonTournamentIds] = useState<[string, string]>(['', ''])
   const [editingTournamentName, setEditingTournamentName] = useState('')
   const [playerDraft, setPlayerDraft] = useState({ name: '', avatar: '' })
   const [exportNotice, setExportNotice] = useState('')
@@ -592,18 +609,33 @@ function App() {
     saveTournamentList(nextTournaments)
   }
 
-  const addTournament = () => {
+  const openCreateTournament = () => {
+    setNewTournamentForm({
+      name: appState.defaultName,
+      playerCount: 8,
+      totalRounds: appState.defaultRoundCount,
+      playerNames: Array.from({ length: 8 }, (_, index) => buildPlayerName(index)),
+    })
+    setIsCreateTournamentOpen(true)
+  }
+
+  const addTournament = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
     const created = createTournament(
       newTournamentForm.name,
       newTournamentForm.playerCount,
-      appState.defaultRoundCount,
+      newTournamentForm.totalRounds,
       appState.defaultScoreTable,
       appState.championRule,
+      newTournamentForm.playerNames,
+      appState.championThreshold,
     )
+    created.status = 'active'
     const nextTournaments = [...appState.tournaments, created]
     setAppState((previous) => ({ ...previous, tournaments: nextTournaments, activeTournamentId: created.id }))
-    setActiveSection('tournament')
-    setNewTournamentForm({ name: appState.defaultName, playerCount: 8 })
+    setActiveSection('overview')
+    setIsCreateTournamentOpen(false)
+    setRoundEditor(null)
   }
 
   const addPlayer = () => {
@@ -640,11 +672,12 @@ function App() {
 
   const setStatus = (status: TournamentStatus) => {
     if (!activeTournament) return
+    const updatedAt = currentTimestamp()
     updateActiveTournament((tournament) => ({
       ...tournament,
       status,
-      lastUpdated: new Date().toISOString(),
-      currentRound: status === 'completed' ? tournament.totalRounds : tournament.currentRound,
+      completedAt: status === 'completed' ? (tournament.completedAt ?? updatedAt) : tournament.completedAt,
+      lastUpdated: updatedAt,
     }))
   }
 
@@ -675,7 +708,7 @@ function App() {
     const nextRound: RoundResult = {
       id: existing?.id ?? crypto.randomUUID(),
       round: draft.round,
-      recordedAt: existing?.recordedAt ?? new Date().toISOString(),
+      recordedAt: existing?.recordedAt ?? currentTimestamp(),
       status: 'complete',
       results: payload,
     }
@@ -684,32 +717,20 @@ function App() {
       ? activeTournament.rounds.map((round) => (round.round === draft.round ? nextRound : round))
       : [...activeTournament.rounds, nextRound].sort((a, b) => a.round - b.round)
 
+    const updatedAt = currentTimestamp()
     updateActiveTournament((tournament) => ({
       ...tournament,
       rounds: nextRounds,
-      currentRound: Math.max(tournament.currentRound, draft.round + 1),
-      lastUpdated: new Date().toISOString(),
+      status: tournament.status,
+      completedAt: tournament.completedAt,
+      currentRound: Math.min(tournament.totalRounds, Math.max(tournament.currentRound, draft.round + 1)),
+      lastUpdated: updatedAt,
     }))
     setRoundEditor(null)
   }
 
-  const openRoundEditor = (roundNumber: number) => {
-    if (!activeTournament) return
-    const existing = getHistoryRoundData(activeTournament, roundNumber)
-    const results = activeTournament.players.map((player) => {
-      const found = existing?.results.find((entry) => entry.playerId === player.id)
-      return {
-        playerId: player.id,
-        rank: found?.rank ?? 1 + (activeTournament.players.indexOf(player) % 8),
-      }
-    })
-
-    setRoundEditor({ round: roundNumber, results })
-  }
-
   const ranking = activeTournament ? getTournamentRanking(activeTournament) : []
 
-  const recentRounds = activeTournament?.rounds.slice().sort((a, b) => b.round - a.round).slice(0, 5) ?? []
   const statsForCharts = useMemo(() => {
     if (!activeTournament) return []
     return Array.from({ length: activeTournament.totalRounds }, (_, index) => {
@@ -821,7 +842,7 @@ function App() {
       <div className="empty-state__icon"><Trophy size={28} /></div>
       <h3>{title}</h3>
       <p>{description}</p>
-      <button className="primary-button" onClick={addTournament} type="button">
+      <button className="primary-button" onClick={openCreateTournament} type="button">
         <Plus size={16} /> Tạo giải đấu mới
       </button>
     </div>
@@ -842,10 +863,100 @@ function App() {
             <p className="eyebrow">Tổng quan</p>
             <h2>{activeTournament.name}</h2>
           </div>
-          <button className="primary-button" type="button" onClick={() => setActiveSection('tournament')}>
-            <Plus size={16} /> Tạo giải đấu mới
-          </button>
         </div>
+
+        <section className="round-entry panel">
+          <div className="round-entry__heading">
+            <div>
+              <p className="eyebrow">{activeTournament.status === 'completed' ? 'Giải đấu đã khép lại' : `VÒNG ${activeTournament.currentRound} / ${activeTournament.totalRounds}`}</p>
+              <h3>{activeTournament.status === 'completed' ? 'Đã hoàn thành' : `Nhập kết quả vòng ${activeTournament.currentRound}`}</h3>
+            </div>
+            {activeTournament.status !== 'completed' && <span className="round-status">{activeTournament.status === 'paused' ? 'ĐANG TẠM DỪNG' : 'SẴN SÀNG'}</span>}
+          </div>
+          {activeTournament.status !== 'completed' && (
+            <form
+              className="round-entry__form"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && event.target instanceof HTMLSelectElement) {
+                  event.preventDefault()
+                  event.currentTarget.requestSubmit()
+                }
+              }}
+              onSubmit={(event) => {
+                event.preventDefault()
+                const currentDraft = roundEditor?.round === activeTournament.currentRound
+                  ? roundEditor
+                  : {
+                      round: activeTournament.currentRound,
+                      results: activeTournament.players.map((player, index) => ({
+                        playerId: player.id,
+                        rank: activeTournament.rounds
+                          .find((round) => round.round === activeTournament.currentRound)
+                          ?.results.find((result) => result.playerId === player.id)?.rank ?? index + 1,
+                      })),
+                    }
+                setRoundResults(currentDraft)
+              }}
+            >
+              <div className="round-entry__players">
+                {activeTournament.players.map((player, index) => {
+                  const round = activeTournament.rounds.find((item) => item.round === activeTournament.currentRound)
+                  const selectedRank = roundEditor?.round === activeTournament.currentRound
+                    ? roundEditor.results.find((entry) => entry.playerId === player.id)?.rank ?? index + 1
+                    : round?.results.find((entry) => entry.playerId === player.id)?.rank ?? index + 1
+                  return (
+                    <label className="round-entry__player" key={player.id}>
+                      <img src={getPlayerAvatar(player, index)} alt="" />
+                      <span>{player.displayName}</span>
+                      <select
+                        aria-label={`Thứ hạng của ${player.displayName}`}
+                        value={selectedRank}
+                        onChange={(event) => {
+                          const currentDraft = roundEditor?.round === activeTournament.currentRound
+                            ? roundEditor
+                            : {
+                                round: activeTournament.currentRound,
+                                results: activeTournament.players.map((entry, playerIndex) => ({
+                                  playerId: entry.id,
+                                  rank: activeTournament.rounds
+                                    .find((item) => item.round === activeTournament.currentRound)
+                                    ?.results.find((result) => result.playerId === entry.id)?.rank ?? playerIndex + 1,
+                                })),
+                              }
+                          setRoundEditor({
+                            ...currentDraft,
+                            results: currentDraft.results.map((entry) => entry.playerId === player.id
+                              ? { ...entry, rank: Number(event.target.value) }
+                              : entry),
+                          })
+                        }}
+                      >
+                        {Array.from({ length: 8 }, (_, rankIndex) => (
+                          <option key={rankIndex + 1} value={rankIndex + 1}>#{rankIndex + 1}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )
+                })}
+              </div>
+              <div className="round-entry__footer">
+                <span>Chọn thứ hạng rồi nhấn Enter hoặc nút lưu. Thứ hạng trùng sẽ bị từ chối.</span>
+                <button className="primary-button" type="submit"><CheckCircle2 size={16} /> Lưu kết quả vòng</button>
+              </div>
+            </form>
+          )}
+          {activeTournament.status !== 'completed' && ranking.some((player) => player.champion) && (
+            <div className="round-entry__complete">
+              <p>Đã có nhà vô địch theo luật của giải. Bạn có thể hoàn thành giải để lưu kết quả.</p>
+              <button className="primary-button" type="button" onClick={() => setStatus('completed')}>
+                <CheckCircle2 size={16} /> Hoàn thành giải
+              </button>
+            </div>
+          )}
+          {activeTournament.status === 'completed' && (
+            <span className="round-status round-status--complete">GIẢI ĐÃ HOÀN THÀNH</span>
+          )}
+        </section>
 
         <div className="stats-grid">
           {summaryCards.map((card) => (
@@ -887,23 +998,10 @@ function App() {
             )}
           </div>
 
-          <div className="panel">
-            <div className="panel-header">
-              <h3>Trận gần nhất</h3>
-            </div>
-            {recentRounds.length ? (
-              <div className="recent-rounds">
-                {recentRounds.map((round) => (
-                  <div key={round.id} className="round-row">
-                    <span>Vòng {round.round}</span>
-                    <strong>{round.results.length} người</strong>
-                    <small>{formatDate(round.recordedAt)}</small>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p>Chưa có trận nào được ghi nhận.</p>
-            )}
+          <div className="panel archive-shortcut">
+            <div className="panel-header"><h3>Giải đấu đã lưu</h3></div>
+            <p>{appState.tournaments.filter((tournament) => tournament.status === 'completed').length} giải đã hoàn thành và được lưu trữ.</p>
+            <button className="secondary-button" type="button" onClick={() => setActiveSection('history')}>Mở lưu trữ &amp; so sánh</button>
           </div>
         </div>
 
@@ -935,50 +1033,13 @@ function App() {
 
   const renderTournament = () => {
     if (!activeTournament) {
-      return (
-        <div className="panel" style={{ maxWidth: 560 }}>
-          <div className="panel-header"><h3>Tạo giải đấu mới</h3></div>
-          <div className="form-grid">
-            <label>
-              <span>Tên giải</span>
-              <input
-                value={newTournamentForm.name}
-                onChange={(event) => setNewTournamentForm((previous) => ({ ...previous, name: event.target.value }))}
-              />
-            </label>
-            <label>
-              <span>Số lượng người chơi</span>
-              <select
-                value={newTournamentForm.playerCount}
-                onChange={(event) =>
-                  setNewTournamentForm((previous) => ({
-                    ...previous,
-                    playerCount: Number(event.target.value),
-                  }))
-                }
-              >
-                {[4, 5, 6, 7, 8].map((count) => (
-                  <option key={count} value={count}>{count}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="button-row">
-            <button className="primary-button" type="button" onClick={addTournament}><Plus size={16} /> Lưu giải đấu</button>
-          </div>
-        </div>
-      )
+      return renderEmptyState('Chưa có giải đấu nào', 'Tạo giải đấu để bắt đầu quản lý điểm, vòng đấu và xếp hạng.')
     }
 
     return (
       <div className="panel">
         <div className="panel-header flex-between">
           <h3>Quản lý giải đấu</h3>
-          <div className="button-row compact">
-            <button className="secondary-button" type="button" onClick={() => setStatus('active')}><Play size={16} /> Bắt đầu</button>
-            <button className="secondary-button" type="button" onClick={() => setStatus('paused')}><Pause size={16} /> Tạm dừng</button>
-            <button className="secondary-button" type="button" onClick={() => setStatus('completed')}><CheckCircle2 size={16} /> Hoàn thành</button>
-          </div>
         </div>
 
         <div className="form-grid two-columns">
@@ -1282,52 +1343,142 @@ function App() {
   }
 
   const renderHistory = () => {
-    if (!activeTournament) return renderEmptyState('Chưa có lịch sử trận đấu', 'Khi giải chạy, các vòng đấu được lưu ở đây để chỉnh sửa lại dữ liệu.')
+    const archivedTournaments = appState.tournaments
+      .filter((tournament) => tournament.status === 'completed')
+      .sort((first, second) => new Date(second.completedAt ?? second.lastUpdated).getTime() - new Date(first.completedAt ?? first.lastUpdated).getTime())
+    const firstCompared = archivedTournaments.find((tournament) => tournament.id === comparisonTournamentIds[0])
+    const secondCompared = archivedTournaments.find((tournament) => tournament.id === comparisonTournamentIds[1])
+    const playerNames = [...new Set(archivedTournaments.flatMap((tournament) => tournament.players.map((player) => player.displayName)))]
+    const playerHistory = playerNames.map((displayName) => {
+      const entries = archivedTournaments.flatMap((tournament) => {
+        const player = tournament.players.find((entry) => entry.displayName === displayName)
+        if (!player) return []
+        const results = tournament.rounds.flatMap((round) =>
+          round.results.filter((entry) => entry.playerId === player.id),
+        )
+        return [{
+          points: results.reduce((total, result) => total + result.points, 0),
+          top1s: results.filter((result) => result.rank === 1).length,
+          averageRank: results.length ? results.reduce((total, result) => total + result.rank, 0) / results.length : 0,
+          won: getTournamentRanking(tournament)[0]?.id === player.id,
+        }]
+      })
+      return {
+        displayName,
+        tournamentCount: entries.length,
+        wins: entries.filter((entry) => entry.won).length,
+        points: entries.reduce((total, entry) => total + entry.points, 0),
+        top1s: entries.reduce((total, entry) => total + entry.top1s, 0),
+        averageRank: entries.length ? entries.reduce((total, entry) => total + entry.averageRank, 0) / entries.length : 0,
+      }
+    }).sort((first, second) => second.wins - first.wins || second.points - first.points)
+    const statsForTournament = (tournament: Tournament | undefined, displayName: string) => {
+      if (!tournament) return null
+      const player = tournament.players.find((entry) => entry.displayName === displayName)
+      if (!player) return null
+      const results = tournament.rounds.flatMap((round) => round.results.filter((entry) => entry.playerId === player.id))
+      return {
+        points: results.reduce((total, result) => total + result.points, 0),
+        top1s: results.filter((result) => result.rank === 1).length,
+        averageRank: results.length ? results.reduce((total, result) => total + result.rank, 0) / results.length : 0,
+      }
+    }
+    const describeStats = (stats: ReturnType<typeof statsForTournament>) =>
+      stats ? `${stats.points} / ${stats.top1s} / ${stats.averageRank.toFixed(1)}` : '—'
 
     return (
-      <div className="panel">
+      <div className="archive-page">
         <div className="page-header">
           <div>
-            <p className="eyebrow">Lịch sử trận đấu</p>
-            <h2>Quản lý vòng đấu</h2>
+            <p className="eyebrow">THÀNH TÍCH ĐƯỢC LƯU GIỮ</p>
+            <h2>Lưu trữ &amp; so sánh</h2>
           </div>
         </div>
-
-        <div className="round-list">
-          {Array.from({ length: activeTournament.totalRounds }, (_, index) => {
-            const roundNumber = index + 1
-            const round = getHistoryRoundData(activeTournament, roundNumber)
-            return (
-              <div key={roundNumber} className="round-card">
-                <div className="round-card__header">
-                  <h4>Vòng {roundNumber}</h4>
-                  <button className="secondary-button" type="button" onClick={() => openRoundEditor(roundNumber)}>
-                    {round ? 'Sửa kết quả' : 'Nhập kết quả'}
-                  </button>
-                </div>
-                {round ? (
-                  <div className="mini-table">
-                    {round.results
-                      .slice()
-                      .sort((a, b) => a.rank - b.rank)
-                      .map((entry) => {
-                        const player = activeTournament.players.find((item) => item.id === entry.playerId)
-                        return (
-                          <div key={entry.playerId} className="mini-row">
-                            <span>#{entry.rank}</span>
-                            <strong>{player?.displayName ?? 'Unknown'}</strong>
-                            <em>{entry.points} pts</em>
-                          </div>
-                        )
-                      })}
-                  </div>
-                ) : (
-                  <p>Chưa có kết quả.</p>
-                )}
+        {archivedTournaments.length ? (
+          <>
+            <section className="archive-grid">
+              {archivedTournaments.map((tournament) => {
+                const winner = getTournamentRanking(tournament)[0]
+                return (
+                  <article className="archive-card" key={tournament.id}>
+                    <div className="archive-card__top">
+                      <span className="round-status">ĐÃ LƯU</span>
+                      <span>{formatDate(tournament.completedAt ?? tournament.lastUpdated)}</span>
+                    </div>
+                    <h3>{tournament.name}</h3>
+                    <p>{tournament.rounds.length} vòng <span>•</span> {tournament.players.length} cờ thủ</p>
+                    {winner && <div className="archive-card__winner"><Trophy size={17} /> {winner.displayName}</div>}
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() => {
+                        setAppState((previous) => ({ ...previous, activeTournamentId: tournament.id }))
+                        setActiveSection('overview')
+                      }}
+                    >
+                      Xem lại giải này
+                    </button>
+                  </article>
+                )
+              })}
+            </section>
+            <section className="panel archive-comparison">
+              <div className="panel-header">
+                <div><p className="eyebrow">BẢNG THÀNH TÍCH</p><h3>So sánh cờ thủ qua các giải</h3></div>
               </div>
-            )
-          })}
-        </div>
+              <div className="archive-table-wrap">
+                <table className="archive-table">
+                  <thead><tr><th>Cờ thủ</th><th>Số giải</th><th>Vô địch</th><th>Tổng điểm</th><th>Top 1</th><th>Hạng TB</th></tr></thead>
+                  <tbody>
+                    {playerHistory.map((player) => (
+                      <tr key={player.displayName}>
+                        <td><strong>{player.displayName}</strong></td><td>{player.tournamentCount}</td>
+                        <td>{player.wins}</td><td>{player.points}</td><td>{player.top1s}</td>
+                        <td>{player.averageRank ? player.averageRank.toFixed(1) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="archive-selectors">
+                <label>Giải thứ nhất
+                  <select value={comparisonTournamentIds[0]} onChange={(event) => setComparisonTournamentIds((previous) => [event.target.value, previous[1]])}>
+                    <option value="">Chọn giải</option>
+                    {archivedTournaments.map((tournament) => <option key={tournament.id} value={tournament.id}>{tournament.name}</option>)}
+                  </select>
+                </label>
+                <span className="archive-versus">VS</span>
+                <label>Giải thứ hai
+                  <select value={comparisonTournamentIds[1]} onChange={(event) => setComparisonTournamentIds((previous) => [previous[0], event.target.value])}>
+                    <option value="">Chọn giải</option>
+                    {archivedTournaments.map((tournament) => <option key={tournament.id} value={tournament.id}>{tournament.name}</option>)}
+                  </select>
+                </label>
+              </div>
+              {firstCompared && secondCompared && (
+                <div className="archive-table-wrap">
+                  <table className="archive-table">
+                    <thead><tr><th>Cờ thủ</th><th>{firstCompared.name} · điểm / Top 1 / hạng TB</th><th>{secondCompared.name} · điểm / Top 1 / hạng TB</th></tr></thead>
+                    <tbody>
+                      {playerNames.map((displayName) => {
+                        const firstStats = statsForTournament(firstCompared, displayName)
+                        const secondStats = statsForTournament(secondCompared, displayName)
+                        if (!firstStats && !secondStats) return null
+                        return <tr key={displayName}><td><strong>{displayName}</strong></td><td>{describeStats(firstStats)}</td><td>{describeStats(secondStats)}</td></tr>
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          </>
+        ) : (
+          <div className="empty-state">
+            <div className="empty-state__icon"><Trophy size={28} /></div>
+            <h3>Chưa có giải đấu hoàn thành</h3>
+            <p>Khi bạn hoàn thành một giải, kết quả sẽ được lưu tại đây để xem lại và so sánh.</p>
+          </div>
+        )}
       </div>
     )
   }
@@ -1413,6 +1564,33 @@ function App() {
   }
 
   const renderSettings = () => {
+    const updateScoringRule = (rank: number, points: number) => {
+      const nextScoreTable = normalizeScoreTable(
+        appState.defaultScoreTable.map((entry) => entry.rank === rank ? { ...entry, points } : entry),
+      )
+      setAppState((previous) => ({
+        ...previous,
+        defaultScoreTable: nextScoreTable,
+        tournaments: previous.tournaments.map((tournament) =>
+          tournament.id === activeTournament?.id && tournament.status !== 'completed'
+            ? { ...tournament, scoreTable: nextScoreTable, lastUpdated: currentTimestamp() }
+            : tournament,
+        ),
+      }))
+    }
+
+    const updateChampionThreshold = (threshold: number) => {
+      setAppState((previous) => ({
+        ...previous,
+        championThreshold: threshold,
+        tournaments: previous.tournaments.map((tournament) =>
+          tournament.id === activeTournament?.id && tournament.status !== 'completed'
+            ? { ...tournament, championThreshold: threshold, lastUpdated: currentTimestamp() }
+            : tournament,
+        ),
+      }))
+    }
+
     return (
       <div className="panel">
         <div className="page-header">
@@ -1451,6 +1629,22 @@ function App() {
             />
           </label>
           <label>
+            <span>Điểm cần đạt để CHECKMATE</span>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={appState.championThreshold}
+              onChange={(event) => updateChampionThreshold(clamp(Number(event.target.value) || 1, 1, 100))}
+            />
+          </label>
+          <label>
+            <span>Điều kiện vô địch</span>
+            <p className="settings-rule-description">
+              CHECKMATE khi đạt ngưỡng điểm; vô địch khi đứng Top 1 ở vòng kế tiếp.
+            </p>
+          </label>
+          <label>
             <span>Giao diện</span>
             <button
               type="button"
@@ -1461,6 +1655,28 @@ function App() {
               {appState.darkMode ? 'Chế độ tối' : 'Chế độ sáng'}
             </button>
           </label>
+        </div>
+
+        <div className="divider" />
+        <div className="section-header-inline">
+          <div>
+            <h4>Luật tính điểm</h4>
+            <p>Thay đổi sẽ áp dụng cho giải mới và giải đang mở. Giải đã hoàn thành được giữ nguyên.</p>
+          </div>
+        </div>
+        <div className="score-table-grid">
+          {appState.defaultScoreTable.map((entry) => (
+            <label key={entry.rank} className="score-row">
+              <span>Top {entry.rank}</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={entry.points}
+                onChange={(event) => updateScoringRule(entry.rank, clamp(Number(event.target.value) || 0, 0, 100))}
+              />
+            </label>
+          ))}
         </div>
 
         <div className="settings-actions">
@@ -1494,7 +1710,7 @@ function App() {
       <main className="login-shell">
         <section className="login-art" aria-label="TFT Tournament">
           <div className="login-art__brand">
-            <span className="contestant-brand__mark"><Trophy size={20} /></span>
+            <img className="contestant-brand__mark" src="/tournament-logo.png" alt="Logo Ao Làng LA" />
             <span>
               <strong>TFT TOURNAMENT</strong>
               <small>AO LÀNG LA • MÙA GIẢI</small>
@@ -1603,6 +1819,11 @@ function App() {
     const lastRound = activeTournament?.rounds
       .slice()
       .sort((a, b) => b.round - a.round)[0]
+    const champion = activeTournament
+      ? activeTournament.status === 'completed'
+        ? ranking[0]
+        : ranking.find((player) => player.champion)
+      : undefined
 
     return (
       <div className="contestant-shell">
@@ -1611,7 +1832,7 @@ function App() {
             event.preventDefault()
             changeView(false)
           }}>
-            <span className="contestant-brand__mark"><Trophy size={20} /></span>
+            <img className="contestant-brand__mark" src="/tournament-logo.png" alt="Logo Ao Làng LA" />
             <span>
               <strong>TFT TOURNAMENT</strong>
               <small>CỔNG THÍ SINH</small>
@@ -1642,6 +1863,22 @@ function App() {
           {syncError && <p className="sync-error-banner" role="alert">{syncError}</p>}
           {activeTournament ? (
             <>
+              {champion && (
+                <section className="contestant-champion-banner" aria-label={`Chúc mừng nhà vô địch ${champion.displayName}`}>
+                  <div className="contestant-champion-banner__copy">
+                    <p className="contestant-eyebrow"><Trophy size={14} /> {activeTournament.status === 'completed' ? 'NHÀ VÔ ĐỊCH MÙA GIẢI' : 'CHECKMATE · ĐÃ LÊN NGÔI'}</p>
+                    <h2>Chúc mừng nhà vô địch!</h2>
+                    <strong>{champion.displayName}</strong>
+                    <span>{champion.totalPoints} điểm · {champion.top1s} lần Top 1</span>
+                  </div>
+                  <img
+                    className="contestant-champion-banner__avatar"
+                    src={getPlayerAvatar(champion, activeTournament.players.findIndex((player) => player.id === champion.id))}
+                    alt={`Ảnh đại diện ${champion.displayName}`}
+                  />
+                  <img className="contestant-champion-banner__trophy" src="/champion-trophy.png" alt="" />
+                </section>
+              )}
               <section className="contestant-hero">
                 <div>
                   <p className="contestant-eyebrow"><Swords size={14} /> BẢNG ĐIỂM GIẢI ĐẤU</p>
@@ -1786,21 +2023,24 @@ function App() {
     <div className={`app-shell ${appState.darkMode ? 'theme-dark' : 'theme-light'}`}>
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark"><Trophy size={18} /></div>
+          <img className="brand-mark" src="/tournament-logo.png" alt="Logo Ao Làng LA" />
           <div>
             <strong>TFT Tournament Pro</strong>
             <small>Ao Làng LA</small>
           </div>
         </div>
 
+        <button className="sidebar-create-button" type="button" onClick={openCreateTournament}>
+          <Plus size={17} /> Tạo giải đấu mới
+        </button>
+
         <nav className="sidebar-nav">
           {[
             { key: 'overview', label: 'Tổng quan', icon: LayoutGrid },
-            { key: 'tournament', label: 'Giải đấu', icon: Swords },
             { key: 'players', label: 'Người chơi', icon: Users },
             { key: 'ranking', label: 'Bảng xếp hạng', icon: Trophy },
             { key: 'check', label: 'Check xếp hạng', icon: ShieldCheck },
-            { key: 'history', label: 'Lịch sử trận đấu', icon: Waypoints },
+            { key: 'history', label: 'Lưu trữ & so sánh', icon: Waypoints },
             { key: 'stats', label: 'Thống kê', icon: ShieldCheck },
             { key: 'settings', label: 'Cài đặt', icon: Save },
           ].map(({ key, label, icon: Icon }) => (
@@ -1853,49 +2093,53 @@ function App() {
         {pageContent}
       </main>
 
-      {roundEditor && activeTournament && (
-        <div className="modal-backdrop" onClick={() => setRoundEditor(null)}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <div className="panel-header flex-between">
-              <h3>Nhập kết quả vòng {roundEditor.round}</h3>
-              <button className="ghost-button" type="button" onClick={() => setRoundEditor(null)}>Đóng</button>
+      {isCreateTournamentOpen && (
+        <div className="modal-backdrop" onClick={() => setIsCreateTournamentOpen(false)}>
+          <section className="modal-card create-tournament-modal" onClick={(event) => event.stopPropagation()} aria-labelledby="create-tournament-title">
+            <div className="create-tournament-modal__hero">
+              <div>
+                <p className="eyebrow">BƯỚC VÀO ĐẤU TRƯỜNG</p>
+                <h2 id="create-tournament-title">Thiết lập mùa giải mới</h2>
+                <p>Tên giải, thể thức tính điểm và danh sách cờ thủ.</p>
+              </div>
+              <img src="/champion-trophy.png" alt="" />
+              <button className="ghost-button create-modal-close" type="button" onClick={() => setIsCreateTournamentOpen(false)} aria-label="Đóng">×</button>
             </div>
-
-            <div className="round-form">
-              {roundEditor.results.map((entry, index) => (
-                <label key={entry.playerId} className="round-field">
-                  <span>{activeTournament.players[index]?.displayName ?? 'Người chơi'}</span>
-                  <select
-                    value={entry.rank}
-                    onChange={(event) =>
-                      setRoundEditor((previous) =>
-                        previous
-                          ? {
-                              ...previous,
-                              results: previous.results.map((item) =>
-                                item.playerId === entry.playerId
-                                  ? { ...item, rank: Number(event.target.value) }
-                                  : item,
-                              ),
-                            }
-                          : previous,
-                      )
-                    }
-                  >
-                    {Array.from({ length: 8 }, (_, rankIndex) => rankIndex + 1).map((rank) => (
-                      <option key={rank} value={rank}>Top {rank}</option>
-                    ))}
+            <form className="create-tournament-form" onSubmit={addTournament}>
+              <div className="form-grid two-columns">
+                <label><span>Tên giải đấu</span>
+                  <input autoFocus required value={newTournamentForm.name} onChange={(event) => setNewTournamentForm((previous) => ({ ...previous, name: event.target.value }))} placeholder="Ví dụ: Ao Làng mùa 2" />
+                </label>
+                <label><span>Số cờ thủ</span>
+                  <select value={newTournamentForm.playerCount} onChange={(event) => setNewTournamentForm((previous) => ({ ...previous, playerCount: Number(event.target.value) }))}>
+                    {[4, 5, 6, 7, 8].map((count) => <option key={count} value={count}>{count} cờ thủ</option>)}
                   </select>
                 </label>
-              ))}
-            </div>
-
-            <div className="button-row">
-              <button className="primary-button" type="button" onClick={() => setRoundResults(roundEditor)}>
-                <Save size={16} /> Lưu kết quả
-              </button>
-            </div>
-          </div>
+                <label><span>Số vòng đấu</span>
+                  <input type="number" min={1} max={12} required value={newTournamentForm.totalRounds} onChange={(event) => setNewTournamentForm((previous) => ({ ...previous, totalRounds: clamp(Number(event.target.value) || 1, 1, 12) }))} />
+                </label>
+              </div>
+              <div className="create-tournament-form__players">
+                <div className="panel-header"><div><p className="eyebrow">ĐỘI HÌNH THAM CHIẾN</p><h3>Nhập tên cờ thủ</h3></div></div>
+                <div className="create-player-grid">
+                  {newTournamentForm.playerNames.slice(0, newTournamentForm.playerCount).map((name, index) => (
+                    <label className="create-player-field" key={index}>
+                      <img src={`/player-avatars/player-${(index % 8) + 1}.png`} alt="" />
+                      <span>#{index + 1}</span>
+                      <input required value={name} onChange={(event) => setNewTournamentForm((previous) => ({
+                        ...previous,
+                        playerNames: previous.playerNames.map((playerName, playerIndex) => playerIndex === index ? event.target.value : playerName),
+                      }))} aria-label={`Tên cờ thủ ${index + 1}`} />
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="create-tournament-form__footer">
+                <button className="secondary-button" type="button" onClick={() => setIsCreateTournamentOpen(false)}>Hủy</button>
+                <button className="primary-button" type="submit"><Swords size={16} /> Tạo giải &amp; vào đấu trường</button>
+              </div>
+            </form>
+          </section>
         </div>
       )}
     </div>

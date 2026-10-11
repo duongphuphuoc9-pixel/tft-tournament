@@ -1,5 +1,7 @@
 # React + TypeScript + Vite
 
+Ứng dụng quản lý giải đấu Teamfight Tactics với tài khoản quản lý và cổng theo dõi dành cho thí sinh.
+
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
 Currently, two official plugins are available:
@@ -37,6 +39,15 @@ See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rule
 npm install
 npm run dev
 ```
+
+## Luồng quản lý giải đấu
+
+- Chọn **Tạo giải đấu mới** ở đầu thanh bên để mở bảng thiết lập tên giải, số vòng, 4–8 cờ thủ và tên từng người chơi. Luật tính điểm và ngưỡng CHECKMATE được thiết lập trong **Cài đặt**.
+- Nhập thứ hạng cho từng người trong thẻ **Vòng hiện tại** trên màn Tổng quan; nhấn Enter hoặc nút lưu. Mỗi hạng chỉ được dùng một lần trong một vòng.
+- Có thể chọn thứ hạng từ Top 1 đến Top 8. Nút **Hoàn thành giải** chỉ xuất hiện trên Tổng quan khi đã có nhà vô địch; nhấn nút để đóng giải và đưa kết quả vào **Lưu trữ & so sánh**. Tạo giải khác sẽ thêm giải mới, không xóa giải đã có.
+- Trang lưu trữ cho phép mở lại giải cũ, xem người vô địch và so sánh tổng thành tích hoặc hai giải cụ thể theo tên cờ thủ.
+- Cổng thí sinh hiển thị banner vinh danh khi có nhà vô địch theo luật hiện hành; nếu giải đã hoàn thành, người đứng đầu bảng xếp hạng được vinh danh.
+- Tám huy hiệu chân dung riêng nằm trong `public/player-avatars/`; ảnh đấu trường nằm ở `public/tournament-arena.png` và được dùng làm nền giao diện quản lý lẫn cổng thí sinh.
 
 ## Supabase: đăng nhập và dữ liệu trực tiếp
 
