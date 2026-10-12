@@ -193,11 +193,25 @@ const createTournament = (
 })
 
 const getTournamentRanking = (tournament: Tournament) => {
+  const championThreshold = tournament.championThreshold ?? 20
+  const pointsBeforeRound = new Map(tournament.players.map((player) => [player.id, 0]))
+  let championId: string | undefined
+  const roundsByNumber = tournament.rounds.slice().sort((first, second) => first.round - second.round)
+
+  for (const round of roundsByNumber) {
+    if (!championId) {
+      const roundWinner = round.results.find((result) =>
+        result.rank === 1 && (pointsBeforeRound.get(result.playerId) ?? 0) >= championThreshold,
+      )
+      championId = roundWinner?.playerId
+    }
+    for (const result of round.results) {
+      pointsBeforeRound.set(result.playerId, (pointsBeforeRound.get(result.playerId) ?? 0) + result.points)
+    }
+  }
+
   const players = tournament.players.map((player) => {
-    const playerRounds = tournament.rounds
-      .slice()
-      .sort((a, b) => a.round - b.round)
-      .map((round) => ({
+    const playerRounds = roundsByNumber.map((round) => ({
         round,
         result: round.results.find((entry) => entry.playerId === player.id),
       }))
@@ -218,18 +232,7 @@ const getTournamentRanking = (tournament: Tournament) => {
     const recentPoints = roundsWithPlayer.length
       ? (roundsWithPlayer[roundsWithPlayer.length - 1].result?.points ?? 0)
       : 0
-    const championThreshold = tournament.championThreshold ?? 20
     const checkmate = totalPoints >= championThreshold
-    let pointsBeforeRound = 0
-    const checkmateRound = playerRounds.find(({ result }) => {
-      pointsBeforeRound += result?.points ?? 0
-      return pointsBeforeRound >= championThreshold
-    })?.round.round
-    const champion = checkmateRound !== undefined && Boolean(
-      tournament.rounds
-        .find((round) => round.round === checkmateRound + 1)
-        ?.results.some((entry) => entry.playerId === player.id && entry.rank === 1),
-    )
 
     return {
       ...player,
@@ -241,15 +244,23 @@ const getTournamentRanking = (tournament: Tournament) => {
       bestFinish,
       recentPoints,
       checkmate,
-      champion,
+      champion: false,
     }
   })
 
-  return players.sort((a, b) => {
+  const sortedPlayers = players.sort((a, b) => {
     if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints
     if (b.top1s !== a.top1s) return b.top1s - a.top1s
     return a.averageRank - b.averageRank
   })
+  const officialChampionId = championId ?? (
+    tournament.status === 'completed' ? sortedPlayers[0]?.id : undefined
+  )
+
+  return sortedPlayers.map((player) => ({
+    ...player,
+    champion: player.id === officialChampionId,
+  }))
 }
 
 const getHistoryRoundData = (tournament: Tournament, roundNumber: number) => {
@@ -1360,7 +1371,7 @@ function App() {
           points: results.reduce((total, result) => total + result.points, 0),
           top1s: results.filter((result) => result.rank === 1).length,
           averageRank: results.length ? results.reduce((total, result) => total + result.rank, 0) / results.length : 0,
-          won: getTournamentRanking(tournament)[0]?.id === player.id,
+          won: getTournamentRanking(tournament).find((entry) => entry.champion)?.id === player.id,
         }]
       })
       return {
@@ -1398,7 +1409,7 @@ function App() {
           <>
             <section className="archive-grid">
               {archivedTournaments.map((tournament) => {
-                const winner = getTournamentRanking(tournament)[0]
+                const winner = getTournamentRanking(tournament).find((player) => player.champion)
                 return (
                   <article className="archive-card" key={tournament.id}>
                     <div className="archive-card__top">
@@ -1819,11 +1830,7 @@ function App() {
     const lastRound = activeTournament?.rounds
       .slice()
       .sort((a, b) => b.round - a.round)[0]
-    const champion = activeTournament
-      ? activeTournament.status === 'completed'
-        ? ranking[0]
-        : ranking.find((player) => player.champion)
-      : undefined
+    const champion = ranking.find((player) => player.champion)
 
     return (
       <div className="contestant-shell">
